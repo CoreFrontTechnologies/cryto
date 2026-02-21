@@ -28,6 +28,12 @@ import {
 } from "recharts";
 
 const ASSETS = ["BTC", "ETH", "SOL", "BNB"];
+const ASSET_COLORS: Record<string, string> = {
+  BTC: "#F7931A",
+  ETH: "#627EEA",
+  SOL: "#14F195",
+  BNB: "#F3BA2F"
+};
 
 export default function App() {
   const [prices, setPrices] = useState<Prices | null>(null);
@@ -35,14 +41,32 @@ export default function App() {
   const [predictions, setPredictions] = useState<Record<string, PredictionResult>>({});
   const [loading, setLoading] = useState(true);
   const [predicting, setPredicting] = useState<string | null>(null);
-  const [selectedAsset, setSelectedAsset] = useState("BTC");
-  const [history, setHistory] = useState<any[]>([]);
+  const [selectedAssets, setSelectedAssets] = useState<string[]>(["BTC"]);
+  const [chartData, setChartData] = useState<any[]>([]);
 
-  const fetchHistory = async (symbol: string) => {
+  const fetchHistory = async (symbols: string[]) => {
     try {
-      const res = await fetch(`/api/history/${symbol}`);
-      const data = await res.json();
-      setHistory(data.reverse());
+      const results = await Promise.all(
+        symbols.map(async (symbol) => {
+          const res = await fetch(`/api/history/${symbol}`);
+          const data = await res.json();
+          return { symbol, data: data.reverse() };
+        })
+      );
+
+      // Merge data by timestamp
+      // For simplicity, we'll assume timestamps align closely or just use the index if they are fetched at same intervals
+      // A better way is to group by a rounded timestamp
+      const merged: Record<string, any> = {};
+      results.forEach(({ symbol, data }) => {
+        data.forEach((item: any) => {
+          const time = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          if (!merged[time]) merged[time] = { timestamp: time };
+          merged[time][symbol] = item.price;
+        });
+      });
+
+      setChartData(Object.values(merged));
     } catch (error) {
       console.error("Error fetching history:", error);
     }
@@ -73,8 +97,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetchHistory(selectedAsset);
-  }, [selectedAsset]);
+    fetchHistory(selectedAssets);
+  }, [selectedAssets]);
+
+  const toggleAsset = (symbol: string) => {
+    setSelectedAssets(prev => {
+      if (prev.includes(symbol)) {
+        if (prev.length === 1) return prev; // Keep at least one
+        return prev.filter(s => s !== symbol);
+      }
+      return [...prev, symbol];
+    });
+  };
 
   const handlePredict = async (symbol: string) => {
     if (!prices || !sentiment) return;
@@ -88,6 +122,8 @@ export default function App() {
       setPredicting(null);
     }
   };
+
+  const primaryAsset = selectedAssets[selectedAssets.length - 1];
 
   if (loading && !prices) {
     return (
@@ -155,21 +191,28 @@ export default function App() {
 
           {/* Asset List */}
           <section className="space-y-3">
-            <h2 className="text-xs font-mono uppercase tracking-widest opacity-50 px-2">Tracked Assets</h2>
+            <div className="flex justify-between items-center px-2">
+              <h2 className="text-xs font-mono uppercase tracking-widest opacity-50">Tracked Assets</h2>
+              <span className="text-[10px] opacity-30 font-mono">MULTI-SELECT ENABLED</span>
+            </div>
             {ASSETS.map((symbol) => (
               <button
                 key={symbol}
-                onClick={() => setSelectedAsset(symbol)}
+                onClick={() => toggleAsset(symbol)}
                 className={`w-full text-left p-4 rounded-xl border transition-all duration-200 flex items-center justify-between group ${
-                  selectedAsset === symbol 
+                  selectedAssets.includes(symbol) 
                     ? 'bg-emerald-500/10 border-emerald-500/50' 
                     : 'bg-[#121214] border-white/5 hover:border-white/20'
                 }`}
               >
                 <div className="flex items-center gap-4">
-                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs ${
-                    selectedAsset === symbol ? 'bg-emerald-500 text-black' : 'bg-white/5 text-white'
-                  }`}>
+                  <div 
+                    className="w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs"
+                    style={{ 
+                      backgroundColor: selectedAssets.includes(symbol) ? ASSET_COLORS[symbol] : 'rgba(255,255,255,0.05)',
+                      color: selectedAssets.includes(symbol) ? 'black' : 'white'
+                    }}
+                  >
                     {symbol}
                   </div>
                   <div>
@@ -200,54 +243,78 @@ export default function App() {
             <div className="flex items-center justify-between mb-8">
               <div>
                 <h2 className="text-2xl font-bold flex items-center gap-3">
-                  {selectedAsset} Analysis
+                  {selectedAssets.length > 1 ? "Market Comparison" : `${primaryAsset} Analysis`}
                   <span className="text-xs font-mono font-normal opacity-40 bg-white/5 px-2 py-1 rounded">LIVE</span>
                 </h2>
-                <p className="text-sm opacity-50 mt-1">Daily prediction model for tonight's close.</p>
+                <p className="text-sm opacity-50 mt-1">
+                  {selectedAssets.length > 1 
+                    ? `Comparing ${selectedAssets.join(", ")} price action.` 
+                    : `Daily prediction model for ${primaryAsset} tonight's close.`}
+                </p>
               </div>
               <button
-                onClick={() => handlePredict(selectedAsset)}
-                disabled={predicting === selectedAsset}
+                onClick={() => handlePredict(primaryAsset)}
+                disabled={predicting === primaryAsset}
                 className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black px-6 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-all shadow-lg shadow-emerald-500/20 active:scale-95"
               >
-                {predicting === selectedAsset ? (
+                {predicting === primaryAsset ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
                 ) : (
                   <Brain className="w-4 h-4" />
                 )}
-                RUN AI PREDICTION
+                PREDICT {primaryAsset}
               </button>
             </div>
 
             {/* Chart */}
-            <div className="h-48 w-full mb-8 opacity-50">
+            <div className="h-64 w-full mb-8">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={history}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
-                  <XAxis dataKey="timestamp" hide />
-                  <YAxis domain={['auto', 'auto']} hide />
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                  <XAxis 
+                    dataKey="timestamp" 
+                    stroke="#ffffff20" 
+                    fontSize={10} 
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis 
+                    domain={['auto', 'auto']} 
+                    hide 
+                  />
                   <Tooltip 
-                    contentStyle={{ backgroundColor: '#121214', border: '1px solid #ffffff10' }}
-                    labelStyle={{ display: 'none' }}
+                    contentStyle={{ backgroundColor: '#121214', border: '1px solid #ffffff10', borderRadius: '8px' }}
+                    itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
+                    labelStyle={{ fontSize: '10px', opacity: 0.5, marginBottom: '4px' }}
                   />
-                  <Line 
-                    type="monotone" 
-                    dataKey="price" 
-                    stroke="#10b981" 
-                    strokeWidth={2} 
-                    dot={false} 
-                    animationDuration={1000}
-                  />
+                  {selectedAssets.map(symbol => (
+                    <Line 
+                      key={symbol}
+                      type="monotone" 
+                      dataKey={symbol} 
+                      stroke={ASSET_COLORS[symbol]} 
+                      strokeWidth={2} 
+                      dot={false} 
+                      animationDuration={1000}
+                    />
+                  ))}
                 </LineChart>
               </ResponsiveContainer>
-              <div className="text-[10px] font-mono text-center opacity-40 uppercase tracking-widest mt-2">Recent Price Action (Live Updates)</div>
+              <div className="flex justify-center gap-4 mt-4">
+                {selectedAssets.map(symbol => (
+                  <div key={symbol} className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: ASSET_COLORS[symbol] }} />
+                    <span className="text-[10px] font-mono opacity-40 uppercase">{symbol}</span>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Prediction Result Display */}
             <AnimatePresence mode="wait">
-              {predictions[selectedAsset] ? (
+              {predictions[primaryAsset] ? (
                 <motion.div
-                  key={selectedAsset + "-pred"}
+                  key={primaryAsset + "-pred"}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -20 }}
@@ -255,21 +322,21 @@ export default function App() {
                 >
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="bg-white/5 rounded-xl p-5 border border-white/5">
-                      <div className="text-[10px] font-mono opacity-40 uppercase mb-2">Predicted Price</div>
+                      <div className="text-[10px] font-mono opacity-40 uppercase mb-2">Predicted Price ({primaryAsset})</div>
                       <div className="text-3xl font-mono font-bold text-emerald-500">
-                        ${predictions[selectedAsset].predictedPrice.toLocaleString()}
+                        ${predictions[primaryAsset].predictedPrice.toLocaleString()}
                       </div>
                     </div>
                     <div className="bg-white/5 rounded-xl p-5 border border-white/5">
                       <div className="text-[10px] font-mono opacity-40 uppercase mb-2">Confidence Score</div>
                       <div className="text-3xl font-mono font-bold text-white">
-                        {predictions[selectedAsset].confidence}%
+                        {predictions[primaryAsset].confidence}%
                       </div>
                     </div>
                     <div className="bg-white/5 rounded-xl p-5 border border-white/5">
                       <div className="text-[10px] font-mono opacity-40 uppercase mb-2">Probability Range</div>
                       <div className="text-sm font-mono font-bold">
-                        ${predictions[selectedAsset].probabilityRange.low.toLocaleString()} - ${predictions[selectedAsset].probabilityRange.high.toLocaleString()}
+                        ${predictions[primaryAsset].probabilityRange.low.toLocaleString()} - ${predictions[primaryAsset].probabilityRange.high.toLocaleString()}
                       </div>
                     </div>
                   </div>
@@ -280,7 +347,7 @@ export default function App() {
                       AI Reasoning & Market Context
                     </h3>
                     <p className="text-sm leading-relaxed opacity-80 italic">
-                      "{predictions[selectedAsset].reasoning}"
+                      "{predictions[primaryAsset].reasoning}"
                     </p>
                   </div>
 
@@ -295,7 +362,7 @@ export default function App() {
                       <div className="absolute inset-0 bg-gradient-to-r from-red-500/10 via-emerald-500/10 to-blue-500/10" />
                       <motion.div 
                         initial={{ left: "0%" }}
-                        animate={{ left: `${predictions[selectedAsset].confidence}%` }}
+                        animate={{ left: `${predictions[primaryAsset].confidence}%` }}
                         className="absolute w-1 h-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.5)]"
                       />
                       <div className="w-full flex justify-between relative z-10 text-[10px] font-mono opacity-20">
@@ -307,7 +374,7 @@ export default function App() {
               ) : (
                 <div className="flex-1 flex flex-col items-center justify-center text-center opacity-30">
                   <Brain className="w-16 h-16 mb-4" />
-                  <p className="max-w-xs text-sm">Select an asset and run the AI prediction model to see tonight's price forecast.</p>
+                  <p className="max-w-xs text-sm">Select assets and run the AI prediction model to see tonight's price forecast for {primaryAsset}.</p>
                 </div>
               )}
             </AnimatePresence>
